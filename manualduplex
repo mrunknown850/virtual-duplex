@@ -1,0 +1,109 @@
+#!/bin/bash
+# Custom CUPS backend for Manual Duplex 
+exec >> /tmp/print_server.logs 2>&1
+
+echo "============== JOB $1 STARTED =============="
+
+echo "DEBUG: Script called with $# arguments."
+echo "DEBUG: Job ID - $1"
+echo "DEBUG: User - $2"
+echo "DEBUG: Title - $3"
+echo "DEBUG: Copies - $4"
+echo "DEBUG: Options - $5"
+echo "DEBUG: File Path - $6"
+
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# 1. Device Discovery
+if [ $# -eq 0 ]; then
+    echo 'file manualduplex:/ "Virtual Duplex" "Manual Duplex Wrapper" "MFG:Generic;MDL:DuplexWrapper;"'
+    exit 0
+fi
+
+JOB_ID=$1
+CUPS_USER=$2
+TITLE=$3
+COPIES=$4
+OPTIONS=$5
+FILE=$6
+
+REAL_PRINTER=   # ! IMPORTANT: SET THIS TO YOUR REAL PRINTER CUPS NAME
+
+# Pass stdin if no file provided.
+if [ -z "$FILE" ]; then
+    echo "INFO: No file passed. Reading from stdin..."
+    FILE=$(mktemp /tmp/cups_duplex_XXXXXX.pdf)
+    cat > "$FILE"
+    CLEANUP_ORIGINAL=false
+    echo "INFO: Finished reading from stdin."
+else
+    echo "INFO: File passed directly by CUPS."
+    CLEANUP_ORIGINAL=true
+fi
+
+echo $FILE
+
+
+if [[ "$OPTIONS" == *"Duplex"* || "$OPTIONS" == *"sides=two-sided"* ]]; then
+    echo "INFO: Duplex mode triggered."
+    PAGES=$(pdftk "$FILE" dump_data | grep NumberOfPages | awk '{print $2}')
+    echo "INFO: Total Pages - $PAGES"
+    WORKING_FILE="$FILE"
+    HAS_PAD=false
+
+    # If pages are odd, append a blank page
+    if [ $((PAGES % 2)) -ne 0 ]; then
+	echo "INFO: Odd number of pages. Generating blank padding page..."
+        BLANK_PDF=$(mktemp /tmp/blank_XXXXXX.pdf)
+        WORKING_FILE=$(mktemp /tmp/padded_XXXXXX.pdf)
+        HAS_PAD=true
+        
+        gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile="$BLANK_PDF" -c showpage
+        pdftk "$FILE" "$BLANK_PDF" cat output "$WORKING_FILE"
+        rm -f "$BLANK_PDF"
+    fi
+
+    ODD_FILE=$(mktemp /tmp/duplex_odd_XXXXXX.pdf)
+    EVEN_FILE=$(mktemp /tmp/duplex_even_XXXXXX.pdf)
+
+    # Extract Odd pages (Normal order)
+    echo "INFO: Extracting Odd Pages..."
+    pdftk "$WORKING_FILE" cat 1-endodd output "$ODD_FILE"
+    
+    # Extract Even pages (Reversed order)
+    echo "INFO: Extracting Even Pages (Reversed)..."
+    pdftk "$WORKING_FILE" cat end-1even output "$EVEN_FILE"
+    
+    echo "INFO: Sending pages to $REAL_PRINTER..."
+    lp -d "$REAL_PRINTER" -o sides=one-sided "$ODD_FILE"
+    
+    # LOCKFILE WAITING TO BE DELETED
+    LOCK_FILE="/tmp/duplex_resume_${JOB_ID}.lock"
+    echo "WAITING_FOR_FLIP" > "$LOCK_FILE"
+    chown nobody "$LOCK_FILE"
+    echo "INFO: Created lockfile $LOCK_FILE. Pausing job..."
+
+    while [ -f "$LOCK_FILE" ]; do
+      sleep 1
+    done
+
+    echo "INFO: Continuing job..."
+    lp -d "$REAL_PRINTER" -o sides=one-sided "$EVEN_FILE"
+    
+    # Cleanup temps
+    rm -f "$ODD_FILE" "$EVEN_FILE"
+
+else
+    # Simplex Passthrough: Print normally
+    echo "INFO: Simplex mode triggered. Printing normally."
+    lp -d "$REAL_PRINTER" -o sides=one-sided "$FILE"
+fi
+
+# Cleanup stdin
+if [ "$CLEANUP_ORIGINAL" = true ]; then
+    rm -f "$FILE"
+fi
+
+echo "INFO: Job finished."
+exit 0
