@@ -40,6 +40,7 @@ Due to the use of PPDs, this method will NOT work on `cups-filters` 3.0 and abov
 If you're installing this on your local device, the printer should appear as `Printer_Server` with both simplex and duplex capability. When doing simplex, it would print as normal. 
 
 ![Fig 1. How to flip the stack correctly](/resources/paper-rearrangement.png)
+
 When doing duplex (long edge), the printer would first the odd pages first before pausing. The user would then flip the stack (Fig 1) and delete the `/tmp/duplex_resume_XXX.lock` file (`XXX` is a placeholder for the job ID) to continue the print job.
 
 ## Tips and tricks
